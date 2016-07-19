@@ -1,0 +1,7 @@
+<launch>
+
+	<node name="human_follow_goal" pkg="simple_navigation_goals" type="human_follow_goal" output="screen">
+	<rosparam file="$(find simple_navigation_goals)/config/human_follow_goal_params.yaml" command="load" />
+	</node>
+
+</launch>
