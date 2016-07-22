@@ -33,6 +33,8 @@ HumanFollowGoal::HumanFollowGoal(const ros::NodeHandle &node)
 	//initializing parameters
 	tracked_ = false;
 	ready_ = false;
+	goal_ori_ = false;
+	goal_same_ = false;
 
 	init_ = true;
 }
@@ -59,7 +61,8 @@ void HumanFollowGoal::runHumanFollow()
 		r.sleep();
 		
 		if(ready_ == true) {
-  		ac.sendGoal(goal);
+			if(goal_same_ == false) 
+				ac.sendGoal(goal);
 		}
 	}
 }
@@ -73,41 +76,49 @@ void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::Cons
 	float score_distance, score_angle;
 	vector<int> candidate;
 	float score = 0.0;
-	int leader;
 
-	for(char i = 0; i < msg->tracks.size(); i++) {
-		tracked_ = false;
-
-		yaw = tf::getYaw(msg->tracks[i].pose.pose.orientation); //ped heading towards robot goal	
-		diff_x = msg->tracks[i].pose.pose.position.x - pos_robot_x;
-		
-		if(diff_x > 0.0 && diff_x < leader_distance_max) { //ped is infront of robot
-			if(yaw < 1.047 && yaw > -1.047) {  //10 deg
-				candidate.push_back(i);
-			}
+	if(tracked_ == true) {
+		yaw = tf::getYaw(msg->tracks[leader_id].pose.pose.orientation); //ped heading towards robot goal
+		diff_x = msg->tracks[leader_id].pose.pose.position.x - pos_robot_x;
+		if(yaw > 1.047 || yaw < -1.047) {
+			tracked_ = false;
 		}
-	}
+	}	
+		
+	if(tracked_ == false) {
+		for(char i = 0; i < msg->tracks.size(); i++) {
+			tracked_ = false;
 
-	for(unsigned int i = 0; i < candidate.size(); i++) {  //i has to be unsigned int since vec.size return unsigned int
-		diff_x = msg->tracks[candidate[i]].pose.pose.position.x - pos_robot_x;
-		diff_y = msg->tracks[candidate[i]].pose.pose.position.y - pos_robot_y;
-		float len = sqrt(diff_x*diff_x + diff_y*diff_y);
-		float angle = atan(diff_y/diff_x);  //this is the deg bet. line projections to goal and ped
-		if(len < leader_distance_max) {
-			if(angle < leader_angle_max && angle > -leader_angle_max) {
-				score_distance = leader_distance_score*(leader_distance_max - len)/leader_distance_max;	
-				score_angle = 	leader_angle_score*(leader_angle_max - abs(angle))/leader_angle_max;
-				if(score_distance+score_angle > score)
-					leader = candidate[i];
-				tracked_ = true;
+			yaw = tf::getYaw(msg->tracks[i].pose.pose.orientation); //ped heading towards robot goal	
+			diff_x = msg->tracks[i].pose.pose.position.x - pos_robot_x;
+		
+			if(diff_x > 0.0 && diff_x < leader_distance_max) { //ped is infront of robot
+				if(yaw < 1.047 && yaw > -1.047) {  //10 deg
+					candidate.push_back(i);
+				}
 			}
 		}
 
-		
+		for(unsigned int i = 0; i < candidate.size(); i++) {  //i has to be unsigned int since vec.size return unsigned int
+			diff_x = msg->tracks[candidate[i]].pose.pose.position.x - pos_robot_x;
+			diff_y = msg->tracks[candidate[i]].pose.pose.position.y - pos_robot_y;
+			float len = sqrt(diff_x*diff_x + diff_y*diff_y);
+			float angle = atan(diff_y/diff_x);  //this is the deg bet. line projections to goal and ped
+			if(len < leader_distance_max) {
+				if(angle < leader_angle_max && angle > -leader_angle_max) {
+					score_distance = leader_distance_score*(leader_distance_max - len)/leader_distance_max;	
+					score_angle = 	leader_angle_score*(leader_angle_max - abs(angle))/leader_angle_max;
+					if(score_distance+score_angle > score)
+						leader_id = candidate[i];
+					tracked_ = true;
+				}
+			}
+		}
+	}		
 /*		cout << candidate[i]+1 << " ";
 		if(i+1 == candidate.size())
 			cout << endl;   */
-	}
+
 /*		diff_y = msg->tracks[i].pose.pose.position.y - pos_robot_y;
 		len = sqrt(diff_x*diff_x + diff_y*diff_y);
 		float deg = atan(diff_y/diff_x);  //this is the deg bet. line projections to goal and ped
@@ -125,21 +136,28 @@ void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::Cons
 			}
 		}
 	} */
-	cout << leader+1 << endl;
+	cout << leader_id+1 << endl;
 	
 	goal.target_pose.header.frame_id = "odom";  //here odom is the global frame
 	goal.target_pose.header.stamp = ros::Time::now();
 
 	if(tracked_ == true) {
 			quat = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, goal_heading);
-			goal.target_pose.pose.position = msg->tracks[leader].pose.pose.position;
+			goal.target_pose.pose.position = msg->tracks[leader_id].pose.pose.position;
 			goal.target_pose.pose.orientation = quat;
-			ready_ = true;	
+			ready_ = true;
+			goal_ori_ = false;
+			goal_same_ = false;	
 	} else {
-			quat = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, goal_heading);
-			goal.target_pose.pose.position.x = goal_x;
-			goal.target_pose.pose.position.y = goal_y;
-			goal.target_pose.pose.orientation = quat;
+			if(goal_ori_ == false) {
+				quat = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, goal_heading);
+				goal.target_pose.pose.position.x = goal_x;
+				goal.target_pose.pose.position.y = goal_y;
+				goal.target_pose.pose.orientation = quat;
+				goal_ori_ = true;
+			} else {
+				goal_same_ = true;
+			}
 	}
 }
 

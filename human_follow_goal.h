@@ -21,17 +21,19 @@ class HumanFollowGoal
 	private:
 		bool tracked_;
 		bool ready_;
+		bool goal_ori_;
+		bool goal_same_;
 
 		ros::NodeHandle nh_;
 		ros::Subscriber sub_people_pos_;
 		ros::Subscriber sub_robot_pos_;
 
-  	move_base_msgs::MoveBaseGoal goal;
+  	move_base_msgs::MoveBaseGoal goal, goal_prev;
 		float pos_robot_x, pos_robot_y;
 		float goal_x, goal_y, goal_heading, goal_radius;  //load value from param server
 		float leader_angle_score, leader_distance_score, leader_speed_score;
 		float leader_angle_max, leader_distance_max, leader_speed_max, leader_speed_min;
-		int tracked_id;
+		int leader_id;
 };
 
 

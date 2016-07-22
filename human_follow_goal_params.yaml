@@ -9,7 +9,7 @@ goal_radius: 1.5
 leader_angle_score: 1.0
 leader_distance_score: 1.0
 leader_speed_score: 1.0
-leader_angle_max: deg(60.0)    #to avoid large deviation (in degree)
+leader_angle_max: deg(20.0)    #to avoid large deviation (in degree)
 leader_distance_max: 3.0  #to avoid leader at too far (in meter)
 leader_speed_max: 1.5   #to avoid running leader (in m/s)
 leader_speed_min: 0.5   #to avoid really slow leader (in m/s)
