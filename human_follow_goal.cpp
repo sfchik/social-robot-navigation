@@ -15,13 +15,15 @@ HumanFollowGoal::HumanFollowGoal(const ros::NodeHandle &node)
 	init_ = false;
 
 	//setup subscriber
-	sub_people_pos_ = nh_.subscribe("/pedsim/tracked_persons", 1,  &HumanFollowGoal::callbackPeoplePose, this);
+//	sub_people_pos_ = nh_.subscribe("/pedsim/tracked_persons", 1,  &HumanFollowGoal::callbackPeoplePose, this);
 	sub_robot_pos_ = nh_.subscribe("/pedsim/robot_position", 1, &HumanFollowGoal::callbackRobotPose, this);
 
 	nh_.getParam("/human_follow_goal/goal_x", goal_x);
 	nh_.getParam("/human_follow_goal/goal_y", goal_y);
 	nh_.getParam("/human_follow_goal/goal_heading", goal_heading);
 	nh_.getParam("/human_follow_goal/goal_radius", goal_radius);
+	nh_.getParam("/human_follow_goal/goal_temporal_distance", goal_temporal_distance);
+	nh_.getParam("/human_follow_goal/goal_repeat_distance", goal_repeat_distance);
 	nh_.getParam("/human_follow_goal/leader_angle_score", leader_angle_score);
 	nh_.getParam("/human_follow_goal/leader_distance_score", leader_distance_score);
 	nh_.getParam("/human_follow_goal/leader_speed_score", leader_speed_score);
@@ -35,6 +37,8 @@ HumanFollowGoal::HumanFollowGoal(const ros::NodeHandle &node)
 	ready_ = false;
 	goal_ori_ = false;
 	goal_same_ = false;
+	temp_ = false;
+	read_robot_pos_ = false;
 
 	init_ = true;
 }
@@ -46,7 +50,7 @@ HumanFollowGoal::~HumanFollowGoal()
 
 void HumanFollowGoal::runHumanFollow()
 {
-	ros::Rate r(2);
+	ros::Rate r(1);
 
   //tell the action client that we want to spin a thread by default
   MoveBaseClient ac("move_base", true);
@@ -56,15 +60,72 @@ void HumanFollowGoal::runHumanFollow()
     ROS_INFO("Waiting for the move_base action server to come up");
   }
 
+	goal.target_pose.header.frame_id = "odom";  //here odom is the global frame
+	goal.target_pose.header.stamp = ros::Time::now();	
+	geometry_msgs::Quaternion quat = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, goal_heading);
+	goal.target_pose.pose.position.x = goal_x;
+	goal.target_pose.pose.position.y = goal_y;
+	goal.target_pose.pose.orientation = quat;
+
+	while(!read_robot_pos_)
+		ros::spinOnce();   //at least read the robot position once
+
+	goal_temporal = goalTemporal(goal);
+	ac.sendGoal(goal_temporal);  //is important to initiate a goal launch
+	goal_prev = goal_temporal;
+
 	while (ros::ok()) {
 		ros::spinOnce();
 		r.sleep();
-		
-		if(ready_ == true) {
-			if(goal_same_ == false) 
-				ac.sendGoal(goal);
+
+		if(goalInRadius(goal_temporal)) {
+			goal_temporal = goalTemporal(goal);
+			if(!goalIsRepeated()) {
+				ac.sendGoal(goal_temporal);
+				goal_prev = goal_temporal;
+			}
 		}
 	}
+}
+
+bool HumanFollowGoal::goalInRadius(move_base_msgs::MoveBaseGoal goal_temp)
+{
+		float diff_x = goal_temp.target_pose.pose.position.x - pos_robot_x;
+		float diff_y = goal_temp.target_pose.pose.position.y - pos_robot_y;	
+		float len = sqrt(diff_x*diff_x + diff_y*diff_y);
+
+		return (len < goal_radius)?true:false;
+}
+
+bool HumanFollowGoal::goalIsRepeated()
+{
+		float diff_x = goal_prev.target_pose.pose.position.x - goal_temporal.target_pose.pose.position.x;
+		float diff_y = goal_prev.target_pose.pose.position.y - goal_temporal.target_pose.pose.position.y;	
+		float len = sqrt(diff_x*diff_x + diff_y*diff_y);
+
+		return (len < goal_repeat_distance)?true:false;
+} 
+
+move_base_msgs::MoveBaseGoal HumanFollowGoal::goalTemporal(move_base_msgs::MoveBaseGoal goal_long)
+{
+		move_base_msgs::MoveBaseGoal goal_new;
+		
+		goal_new = goal_long;
+
+		float robot_x = pos_robot_x;  //store it first before it changes
+		float robot_y = pos_robot_y;
+
+		float diff_x = goal_long.target_pose.pose.position.x - robot_x;
+		float diff_y = goal_long.target_pose.pose.position.y - robot_y;	
+		float angle = atan(diff_y/diff_x);
+		float len = sqrt(diff_x*diff_x + diff_y*diff_y);
+
+		if(len > goal_temporal_distance) {		//update goal_new only is the goal is further than goal_temporal length
+			goal_new.target_pose.pose.position.x = goal_temporal_distance*cos(angle) + robot_x;
+			goal_new.target_pose.pose.position.y = goal_temporal_distance*sin(angle) + robot_y;
+		}
+
+		return goal_new;
 }
 
 void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::ConstPtr& msg)
@@ -81,7 +142,7 @@ void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::Cons
 		yaw = tf::getYaw(msg->tracks[leader_id].pose.pose.orientation); //ped heading towards robot goal
 		diff_x = msg->tracks[leader_id].pose.pose.position.x - pos_robot_x;
 		if(yaw > 1.047 || yaw < -1.047) {
-			tracked_ = false;
+			//tracked_ = false;
 		}
 	}	
 		
@@ -137,18 +198,27 @@ void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::Cons
 		}
 	} */
 	cout << leader_id+1 << endl;
-	
-	goal.target_pose.header.frame_id = "odom";  //here odom is the global frame
-	goal.target_pose.header.stamp = ros::Time::now();
 
-	if(tracked_ == true) {
+	float radius;
+	if(ready_ == true) {  //for the first time don't run this
+		diff_x = goal.target_pose.pose.position.x - pos_robot_x;
+		diff_y = goal.target_pose.pose.position.y - pos_robot_y;
+		radius = sqrt(diff_x*diff_x + diff_y*diff_y);
+	} else {
+		radius = 0.0;
+	}
+
+	if(radius < goal_radius) {
+		goal.target_pose.header.frame_id = "odom";  //here odom is the global frame
+		goal.target_pose.header.stamp = ros::Time::now();
+
+		if(tracked_ == true) {
 			quat = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, goal_heading);
 			goal.target_pose.pose.position = msg->tracks[leader_id].pose.pose.position;
 			goal.target_pose.pose.orientation = quat;
-			ready_ = true;
 			goal_ori_ = false;
-			goal_same_ = false;	
-	} else {
+			goal_same_ = false;				
+		} else {
 			if(goal_ori_ == false) {
 				quat = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, goal_heading);
 				goal.target_pose.pose.position.x = goal_x;
@@ -158,7 +228,10 @@ void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::Cons
 			} else {
 				goal_same_ = true;
 			}
+		}
 	}
+
+	ready_ = true;
 }
 
 
@@ -166,6 +239,7 @@ void HumanFollowGoal::callbackRobotPose(const nav_msgs::Odometry::ConstPtr& msg)
 {
 	pos_robot_x = msg->pose.pose.position.x;
 	pos_robot_y = msg->pose.pose.position.y;
+	read_robot_pos_ = true;
 }
 
 int main(int argc, char** argv)
