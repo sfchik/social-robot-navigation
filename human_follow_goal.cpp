@@ -15,7 +15,7 @@ HumanFollowGoal::HumanFollowGoal(const ros::NodeHandle &node)
 	init_ = false;
 
 	//setup subscriber
-//	sub_people_pos_ = nh_.subscribe("/pedsim/tracked_persons", 1,  &HumanFollowGoal::callbackPeoplePose, this);
+	sub_people_pos_ = nh_.subscribe("/pedsim/tracked_persons", 1,  &HumanFollowGoal::callbackPeoplePose, this);
 	sub_robot_pos_ = nh_.subscribe("/pedsim/robot_position", 1, &HumanFollowGoal::callbackRobotPose, this);
 
 	nh_.getParam("/human_follow_goal/goal_x", goal_x);
@@ -27,7 +27,8 @@ HumanFollowGoal::HumanFollowGoal(const ros::NodeHandle &node)
 	nh_.getParam("/human_follow_goal/leader_angle_score", leader_angle_score);
 	nh_.getParam("/human_follow_goal/leader_distance_score", leader_distance_score);
 	nh_.getParam("/human_follow_goal/leader_speed_score", leader_speed_score);
-	nh_.getParam("/human_follow_goal/leader_angle_max", leader_angle_max);
+	nh_.getParam("/human_follow_goal/leader_angle_explore_max", leader_angle_explore_max);
+	nh_.getParam("/human_follow_goal/leader_angle_shift_max", leader_angle_shift_max);
 	nh_.getParam("/human_follow_goal/leader_distance_max", leader_distance_max);
 	nh_.getParam("/human_follow_goal/leader_speed_max", leader_speed_max);
 	nh_.getParam("/human_follow_goal/leader_speed_min", leader_speed_min);
@@ -40,6 +41,8 @@ HumanFollowGoal::HumanFollowGoal(const ros::NodeHandle &node)
 	temp_ = false;
 	read_robot_pos_ = false;
 
+	state = explore_;
+
 	init_ = true;
 }
 
@@ -50,7 +53,7 @@ HumanFollowGoal::~HumanFollowGoal()
 
 void HumanFollowGoal::runHumanFollow()
 {
-	ros::Rate r(1);
+	ros::Rate r(5);
 
   //tell the action client that we want to spin a thread by default
   MoveBaseClient ac("move_base", true);
@@ -67,6 +70,8 @@ void HumanFollowGoal::runHumanFollow()
 	goal.target_pose.pose.position.y = goal_y;
 	goal.target_pose.pose.orientation = quat;
 
+	goal_store_ori = goal;  //store the original goal for later use
+
 	while(!read_robot_pos_)
 		ros::spinOnce();   //at least read the robot position once
 
@@ -78,57 +83,163 @@ void HumanFollowGoal::runHumanFollow()
 		ros::spinOnce();
 		r.sleep();
 
-		if(goalInRadius(goal_temporal)) {
-			goal_temporal = goalTemporal(goal);
-			if(!goalIsRepeated()) {
+		switch(state) {
+		case explore_:
+			if(tracked_ == true) {
+				goal_temporal = goalTemporal(goal);
 				ac.sendGoal(goal_temporal);
-				goal_prev = goal_temporal;
+				state = ped_follow_;
+				break;
+			}  
+		
+			if(goalInRadius(goal_temporal)) {
+				goal_temporal = goalTemporal(goal);
+				if(!goalIsRepeated()) {
+					ac.sendGoal(goal_temporal);
+					goal_prev = goal_temporal;
+				}
 			}
+			break;
+
+		case ped_follow_:
+//			if(tracked_ == false) {
+//				goal_store_fake = goalFakeCreation(goal_temporal);
+//				goal_temporal = goalTemporal(goal_store_fake);// wiil be a shifted straight line goal 
+//				ac.sendGoal(goal_temporal);
+//				state = ped_fake_follow_;
+//				break;
+//			} 
+
+			if(goalInRadius(goal_temporal)) {
+				goal_temporal = goalTemporal(goal);
+				if(!goalIsRepeated()) {
+					ac.sendGoal(goal_temporal);
+					goal_prev = goal_temporal;
+				}
+			}
+			break;
+
+		case ped_fake_follow_:
+			if(goalInRadius(goal_temporal)) {
+				goal_temporal = goalTemporal(goal_store_fake);
+				if(!goalIsRepeated()) {
+					ac.sendGoal(goal_temporal);
+					goal_prev = goal_temporal;
+				}
+			}
+			break;
+
 		}
 	}
 }
 
 bool HumanFollowGoal::goalInRadius(move_base_msgs::MoveBaseGoal goal_temp)
 {
-		float diff_x = goal_temp.target_pose.pose.position.x - pos_robot_x;
-		float diff_y = goal_temp.target_pose.pose.position.y - pos_robot_y;	
-		float len = sqrt(diff_x*diff_x + diff_y*diff_y);
+	float diff_x = goal_temp.target_pose.pose.position.x - pos_robot_x;
+	float diff_y = goal_temp.target_pose.pose.position.y - pos_robot_y;	
+	float len = sqrt(diff_x*diff_x + diff_y*diff_y);
 
-		return (len < goal_radius)?true:false;
+	return (len < goal_radius)?true:false;
 }
 
 bool HumanFollowGoal::goalIsRepeated()
 {
-		float diff_x = goal_prev.target_pose.pose.position.x - goal_temporal.target_pose.pose.position.x;
-		float diff_y = goal_prev.target_pose.pose.position.y - goal_temporal.target_pose.pose.position.y;	
-		float len = sqrt(diff_x*diff_x + diff_y*diff_y);
+	float diff_x = goal_prev.target_pose.pose.position.x - goal_temporal.target_pose.pose.position.x;
+	float diff_y = goal_prev.target_pose.pose.position.y - goal_temporal.target_pose.pose.position.y;	
+	float len = sqrt(diff_x*diff_x + diff_y*diff_y);
 
-		return (len < goal_repeat_distance)?true:false;
+	return (len < goal_repeat_distance)?true:false;
 } 
 
 move_base_msgs::MoveBaseGoal HumanFollowGoal::goalTemporal(move_base_msgs::MoveBaseGoal goal_long)
 {
-		move_base_msgs::MoveBaseGoal goal_new;
-		
-		goal_new = goal_long;
+	move_base_msgs::MoveBaseGoal goal_new;
+	
+	goal_new = goal_long;
 
-		float robot_x = pos_robot_x;  //store it first before it changes
-		float robot_y = pos_robot_y;
+	float robot_x = pos_robot_x;  //store it first before it changes
+	float robot_y = pos_robot_y;
 
-		float diff_x = goal_long.target_pose.pose.position.x - robot_x;
-		float diff_y = goal_long.target_pose.pose.position.y - robot_y;	
-		float angle = atan(diff_y/diff_x);
-		float len = sqrt(diff_x*diff_x + diff_y*diff_y);
+	float diff_x = goal_long.target_pose.pose.position.x - robot_x;
+	float diff_y = goal_long.target_pose.pose.position.y - robot_y;	
+	float angle = atan(diff_y/diff_x);
+	float len = sqrt(diff_x*diff_x + diff_y*diff_y);
 
-		if(len > goal_temporal_distance) {		//update goal_new only is the goal is further than goal_temporal length
-			goal_new.target_pose.pose.position.x = goal_temporal_distance*cos(angle) + robot_x;
-			goal_new.target_pose.pose.position.y = goal_temporal_distance*sin(angle) + robot_y;
-		}
+	if(len > goal_temporal_distance) {		//update goal_new only is the goal is further than goal_temporal length
+		goal_new.target_pose.pose.position.x = goal_temporal_distance*cos(angle) + robot_x;
+		goal_new.target_pose.pose.position.y = goal_temporal_distance*sin(angle) + robot_y;
+	}
 
-		return goal_new;
+	return goal_new;
 }
 
+move_base_msgs::MoveBaseGoal HumanFollowGoal::goalFakeCreation(move_base_msgs::MoveBaseGoal goal_fake)
+{
+	move_base_msgs::MoveBaseGoal goal_new;	
+	geometry_msgs::Quaternion quat;
+
+	goal_new.target_pose.header.frame_id = "odom";  //here odom is the global frame
+	goal_new.target_pose.header.stamp = ros::Time::now();	
+	goal_new.target_pose.pose = goal_fake.target_pose.pose;
+	goal_new.target_pose.pose.position.x = goal_store_ori.target_pose.pose.position.x;
+	goal_new.target_pose.pose.position.y = goal_fake.target_pose.pose.position.y;
+	
+	return goal_new;
+} 
+ 
 void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::ConstPtr& msg)
+{
+	vector<int> candidate;
+	float diff_x, diff_y;
+	float score = 0.0;  //must initialize since there is a first comparison
+
+	leader_angle_generic = (state == explore_)?leader_angle_explore_max:leader_angle_shift_max;
+
+	for(char i = 0; i < msg->tracks.size(); i++) {
+		tracked_ = false;
+
+		double yaw = tf::getYaw(msg->tracks[i].pose.pose.orientation); //ped heading towards robot goal	
+		diff_x = msg->tracks[i].pose.pose.position.x - pos_robot_x;
+		cout << diff_x << endl;	
+		if(diff_x > 0.0 && diff_x < leader_distance_max) { //ped is infront of robot
+			if(yaw < 1.047 && yaw > -1.047) {  //10 deg
+				candidate.push_back(i);
+			}
+		}
+	}
+
+	for(unsigned int i = 0; i < candidate.size(); i++) {  //i has to be unsigned int since vec.size return unsigned int
+		diff_x = msg->tracks[candidate[i]].pose.pose.position.x - pos_robot_x;
+		diff_y = msg->tracks[candidate[i]].pose.pose.position.y - pos_robot_y;
+		float len = sqrt(diff_x*diff_x + diff_y*diff_y);
+		float angle = atan(diff_y/diff_x);  //this is the deg bet. line projections to goal and ped
+		if(len < leader_distance_max) {
+			if(angle < leader_angle_generic && angle > -leader_angle_generic) {
+				float score_distance = leader_distance_score*(leader_distance_max - len)/leader_distance_max;	
+				float score_angle = 	leader_angle_score*(leader_angle_generic - abs(angle))/leader_angle_generic;
+				if(score_distance+score_angle > score) {
+					leader_id = candidate[i];
+					score = score_distance+score_angle;
+				}
+				tracked_ = true;
+			}
+		}
+	}
+
+	if(tracked_ == true) {
+		geometry_msgs::Quaternion quat;
+
+		goal.target_pose.header.frame_id = "odom";  //here odom is the global frame
+		goal.target_pose.header.stamp = ros::Time::now();
+		quat = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, goal_heading);
+		goal.target_pose.pose.position = msg->tracks[leader_id].pose.pose.position;
+		goal.target_pose.pose.position.x = msg->tracks[leader_id].pose.pose.position.x - 0.5;
+		goal.target_pose.pose.orientation = quat;
+	}
+
+}
+
+/* void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::ConstPtr& msg)
 {
 	geometry_msgs::Quaternion quat;
 	geometry_msgs::PoseStamped msg_convert;
@@ -178,7 +289,7 @@ void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::Cons
 	}		
 /*		cout << candidate[i]+1 << " ";
 		if(i+1 == candidate.size())
-			cout << endl;   */
+			cout << endl;
 
 /*		diff_y = msg->tracks[i].pose.pose.position.y - pos_robot_y;
 		len = sqrt(diff_x*diff_x + diff_y*diff_y);
@@ -196,7 +307,7 @@ void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::Cons
 				}
 			}
 		}
-	} */
+	}
 	cout << leader_id+1 << endl;
 
 	float radius;
@@ -232,7 +343,7 @@ void HumanFollowGoal::callbackPeoplePose(const pedsim_msgs::TrackedPersons::Cons
 	}
 
 	ready_ = true;
-}
+} */
 
 
 void HumanFollowGoal::callbackRobotPose(const nav_msgs::Odometry::ConstPtr& msg)
